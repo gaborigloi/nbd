@@ -168,17 +168,20 @@ module Impl = struct
         >>= fun (fd, _) ->
         (* Background thread per connection *)
         let _ =
-          Lwt.finalize
-            (fun () ->
-               let channel = Nbd_lwt_unix.of_fd fd in
-               Server.connect channel ()
-               >>= fun (name, t) ->
-               Block.connect filename
-               >>= fun b ->
+          let channel = Nbd_lwt_unix.of_fd fd in
+          Lwt.try_bind
+            (Server.connect channel)
+            (fun (name, t) ->
                Lwt.finalize
-                 (fun () -> Server.serve t (module Block) b)
-                 (fun () -> Block.disconnect b))
-            (fun () -> Lwt_unix.close fd) in
+                 (fun () ->
+                   Block.connect filename
+                   >>= fun b ->
+                   Lwt.finalize
+                     (fun () -> Server.serve t (module Block) b)
+                     (fun () -> Block.disconnect b))
+                 (fun () -> Server.close t)
+            )
+            (fun _ -> channel.close ()) in
         loop () in
       loop () in
     Lwt_main.run t;
