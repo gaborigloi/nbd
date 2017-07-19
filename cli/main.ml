@@ -151,6 +151,9 @@ module Impl = struct
         exit 2 in
     `Ok (Lwt_main.run t)
 
+
+  exception Block_connect_failed of string
+
   let serve common filename port =
     let filename = require "filename" filename in
     let handle_connection fd =
@@ -165,7 +168,7 @@ module Impl = struct
                      Block.connect filename
                      >>= function
                      | `Error _ ->
-                       Lwt.fail_with (Printf.sprintf "Failed to open %s" filename)
+                       Lwt.fail (Block_connect_failed (Printf.sprintf "%s" filename))
                      | `Ok b ->
                        Lwt.finalize
                          (fun () -> Server.serve t (module Block) b)
@@ -189,8 +192,11 @@ module Impl = struct
              (* Background thread per connection *)
              let _ =
                Lwt.catch
-                (fun () -> handle_connection fd)
-                (fun e -> Lwt_io.eprintf "Caught exception %s while handling connection\n%!" (Printexc.to_string e))
+                 (fun () -> handle_connection fd)
+                 (function
+                   | Block_connect_failed _ as e -> Lwt.fail e
+                   | e -> Lwt_io.eprintf "Caught exception %s while handling connection\n%!" (Printexc.to_string e)
+                 )
              in
              loop ()
            in
