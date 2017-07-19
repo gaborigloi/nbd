@@ -151,6 +151,7 @@ let serve t (type t) block (b:t) =
     let open Request in
     match request with
     | { ty = Command.Write; from; len; handle } ->
+      Lwt_io.print "NBD_CMD_WRITE\n" >>= fun () ->
       if Int64.(rem from (of_int info.Mirage_block.sector_size)) <> 0L || Int64.(rem (of_int32 len) (of_int info.Mirage_block.sector_size) <> 0L)
       then error t handle `EINVAL
       else begin
@@ -171,6 +172,7 @@ let serve t (type t) block (b:t) =
         copy from (Int32.to_int request.Request.len)
       end
     | { ty = Command.Read; from; len; handle } ->
+      Lwt_io.print "NBD_CMD_READ\n" >>= fun () ->
       if Int64.(rem from (of_int info.Mirage_block.sector_size)) <> 0L || Int64.(rem (of_int32 len) (of_int info.Mirage_block.sector_size) <> 0L)
       then error t handle `EINVAL
       else begin
@@ -193,7 +195,9 @@ let serve t (type t) block (b:t) =
         copy from (Int32.to_int request.Request.len)
       end
     | { ty = Command.Disc; _ } ->
+      Lwt_io.print "NBD_CMD_DISC\n" >>= fun () ->
       Lwt.return_unit
     | _ ->
+      Lwt_io.print "Unknown command; sending EINVAL\n" >>= fun () ->
       error t request.Request.handle `EINVAL in
   loop ()

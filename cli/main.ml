@@ -156,6 +156,23 @@ module Impl = struct
         exit 2 in
     `Ok (Lwt_main.run t)
 
+  let cleanups = Hashtbl.create 4;;
+  let cleanup_id = ref 0;;
+
+  let register_cleanup_handler () =
+    let handler s = Hashtbl.iter (fun _ c -> c ()) cleanups; failwith "Caught signal %s" s in
+    Lwt_unix.on_signal Sys.sigterm handler |> ignore;
+    Lwt_unix.on_signal Sys.sigint handler |> ignore
+
+  let with_cleanup f cleanup =
+    let i = !cleanup_id in
+    incr cleanup_id;
+    Hashtbl.add cleanups i cleanup;
+    Lwt.finalize f (fun () ->
+          Lwt_io.print "unregistering handler\n" >>= fun () ->
+          Lwt.wrap (fun () -> Hashtbl.remove cleanups i) >>= fun () ->
+          Lwt_io.print "unregistered handler\n")
+
   let serve common filename port =
     let filename = require "filename" filename in
     let t =
@@ -168,22 +185,30 @@ module Impl = struct
         >>= fun (fd, _) ->
         (* Background thread per connection *)
         let _ =
-          let channel = Nbd_lwt_unix.of_fd fd in
-          Lwt.try_bind
-            (Server.connect channel)
-            (fun (name, t) ->
-               Lwt.finalize
-                 (fun () ->
-                   Block.connect filename
-                   >>= fun b ->
-                   Lwt.finalize
-                     (fun () -> Server.serve t (module Block) b)
-                     (fun () -> Block.disconnect b))
-                 (fun () -> Server.close t)
+          Lwt.catch (fun () ->
+            with_cleanup (fun () ->
+                  let channel = Nbd_lwt_unix.of_fd fd in
+                  Lwt.try_bind
+                    (Server.connect channel)
+                    (fun (name, t) ->
+                       Lwt.catch
+                         (fun () ->
+                            Block.connect filename
+                            >>= fun b ->
+                            Lwt_io.print "new client\n" >>= fun () ->
+                            Lwt.finalize
+                              (fun () -> Server.serve t (module Block) b)
+                              (fun () -> Block.disconnect b))
+                         (fun _ -> Lwt_io.print "closing\n" >>= fun () -> Server.close t)
+                    )
+                    (fun _ -> Lwt_io.print "closing\n" >>= fun () -> channel.close ())
+                ) (fun () -> print_endline "cleanup")
             )
-            (fun _ -> channel.close ()) in
+            (fun _ -> Lwt_io.print "caught\n")
+        in
         loop () in
       loop () in
+    register_cleanup_handler ();
     Lwt_main.run t;
     `Ok ()
 
