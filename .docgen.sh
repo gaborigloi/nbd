@@ -1,7 +1,6 @@
 #!/bin/sh
 
-# Make sure we're not echoing any sensitive data
-set +x
+set -x
 
 set -e
 
