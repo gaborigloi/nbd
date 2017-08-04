@@ -35,4 +35,4 @@ git -C $DOCDIR config user.name "Travis"
 (cd $DOCDIR; git add *)
 git -C $DOCDIR commit --allow-empty -am "Travis build $TRAVIS_BUILD_NUMBER pushed docs to gh-pages"
 # Don't expose GH_TOKEN
-git -C $DOCDIR push origin gh-pages > /dev/null 2>&1
+git -C $DOCDIR push origin gh-pages |& sed -e "s/$GH_TOKEN/!REDACTED!/g"
