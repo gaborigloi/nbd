@@ -20,5 +20,3 @@ env:
   - PACKAGE=nbd-tool  DISTRO="debian-unstable" OCAML_VERSION=4.03.0
   - PACKAGE=nbd-tool  DISTRO="debian-unstable" OCAML_VERSION=4.04.2
   - PACKAGE=nbd-tool  DISTRO="debian-unstable" OCAML_VERSION=4.05.0
-branches:
-  only: master
