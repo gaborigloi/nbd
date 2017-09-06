@@ -129,5 +129,44 @@ let with_channel fd tls_role f =
     (* We use ignore_exn lest clearchan was closed already by f. *)
     (ignore_exn (fun () -> clearchan.close_clear ()))
 
+let accept_clients port tls_role handle_client =
+  let handle_connection fd =
+    Lwt.finalize
+      (fun () ->
+         with_channel fd tls_role
+           (fun clearchan ->
+              Server.with_connection
+                clearchan
+                handle_client
+           )
+      )
+      (ignore_exn (fun () -> Lwt_unix.close fd))
+  in
+
+  let t =
+    let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+    Lwt.finalize
+      (fun () ->
+         Lwt_unix.setsockopt sock Lwt_unix.SO_REUSEADDR true;
+         let sockaddr = Lwt_unix.ADDR_INET(Unix.inet_addr_any, port) in
+         Lwt_unix.bind sock sockaddr;
+         Lwt_unix.listen sock 5;
+         let rec loop () =
+           Lwt_unix.accept sock
+           >>= fun (fd, _) ->
+           (* Background thread per connection *)
+           let _ =
+             Lwt.catch
+               (fun () -> handle_connection fd)
+               (fun e -> Lwt_io.eprintf "Caught exception %s while handling connection\n%!" (Printexc.to_string e))
+           in
+           loop ()
+         in
+         loop ()
+      )
+      (ignore_exn (fun () -> Lwt_unix.close sock))
+  in
+  Lwt_main.run t
+
 module Client = Nbd.Client
 module Server = Nbd.Server

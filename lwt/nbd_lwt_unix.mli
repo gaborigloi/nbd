@@ -44,6 +44,13 @@ val with_channel:
     applies [f] to the resulting channel, with a guarantee to call
     the channel's [close_clear] function afterwards. *)
 
+val accept_clients: int -> tls_role option -> (string -> Nbd.Server.t -> unit Lwt.t) -> 'a
+(** [accept_clients port tls_role handle_client] starts the main server loop
+    using [Lwt_main.run] that accepts incoming connections.  The result of
+    [Server.connect] is an [(export_name, svr)] tuple passed to the
+    [handle_client] function, which can decide whether to accept the given
+    export. *)
+
 module Client: S.CLIENT
 (** A client allows you to access remote disks *)
 
