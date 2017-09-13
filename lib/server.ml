@@ -61,17 +61,25 @@ let connect channel ?offer () =
   in
   let read_hdr_and_payload readfn =
     readfn req >>= fun () ->
+          print_endline "XXXXX read";
     match OptionRequestHeader.unmarshal req with
     | `Error e -> fail e
     | `Ok hdr ->
+      Printf.printf "XXXX len: %ld" hdr.length;
         let payload = make_blank_payload hdr in
         readfn payload
-        >>= fun () -> return (hdr.OptionRequestHeader.ty, payload)
+        >>= fun () ->
+          print_endline "XXXXX read p";
+        return (hdr.OptionRequestHeader.ty, payload)
   in
   let generic_loop chan =
+          print_endline "XXXXX gen";
     let rec loop () =
+          print_endline "XXXXX loop";
       read_hdr_and_payload chan.read
-      >>= fun (opt, payload) -> match opt with
+      >>= fun (opt, payload) ->
+          print_endline "XXXXX in opt ";
+      match opt with
         | Option.StartTLS ->
           let resp = if chan.is_tls then OptionResponse.Invalid else OptionResponse.Policy in
           respond opt resp chan.write
@@ -82,8 +90,10 @@ let connect channel ?offer () =
           respond opt OptionResponse.Unsupported chan.write
           >>= loop
         | Option.List ->
+          print_endline "XXXXX in opt list ";
           begin match offer with
             | None ->
+              print_endline "XXXXX in opt list none";
               respond opt OptionResponse.Policy chan.write
               >>= loop
             | Some offers ->
