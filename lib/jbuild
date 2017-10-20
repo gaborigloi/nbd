@@ -36,4 +36,4 @@ let () = Printf.ksprintf Jbuild_plugin.V1.send {|
     sexplib))
   %s
  ))
-|} (flags ["ppx_sexp_conv"; "cstruct.ppx"]) (coverage_rewriter ~full:true)
+|} (flags ["ppx_sexp_conv"; "cstruct.ppx"; "lwt.ppx"]) (coverage_rewriter ~full:true)

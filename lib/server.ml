@@ -39,19 +39,16 @@ let make channel =
 
 let connect channel ?offer () =
   let section = Lwt_log_core.Section.make("Server.connect") in
-  Lwt_log_core.notice ~section "Starting fixed-newstyle negotiation" >>= fun () ->
+  let%lwt () = Lwt_log_core.notice ~section "Starting fixed-newstyle negotiation" in
 
   let buf = Cstruct.create Announcement.sizeof in
   Announcement.(marshal buf `V2);
-  channel.write_clear buf
-  >>= fun () ->
+  let%lwt () = channel.write_clear buf in
   let buf = Cstruct.create (Negotiate.sizeof `V2) in
   Negotiate.(marshal buf (V2 [ GlobalFlag.Fixed_newstyle ]));
-  channel.write_clear buf
-  >>= fun () ->
+  let%lwt () = channel.write_clear buf in
   let buf = Cstruct.create NegotiateResponse.sizeof in
-  channel.read_clear buf
-  >>= fun () ->
+  let%lwt () = channel.read_clear buf in
   (* Option negotiation *)
   let req = Cstruct.create OptionRequestHeader.sizeof in
   let res = Cstruct.create OptionResponseHeader.sizeof in
@@ -65,64 +62,62 @@ let connect channel ?offer () =
   let send_ack opt writefn = respond opt OptionResponse.Ack writefn
   in
   let read_hdr_and_payload readfn =
-    readfn req >>= fun () ->
+    let%lwt () = readfn req in
     match OptionRequestHeader.unmarshal req with
     | `Error e -> Lwt.fail e
     | `Ok hdr ->
         let payload = make_blank_payload hdr in
-        readfn payload
-        >>= fun () -> Lwt.return (hdr.OptionRequestHeader.ty, payload)
+        let%lwt () = readfn payload in
+        Lwt.return (hdr.OptionRequestHeader.ty, payload)
   in
   let generic_loop chan =
     let rec loop () =
-      read_hdr_and_payload chan.read
-      >>= fun (opt, payload) -> match opt with
+      let%lwt (opt, payload) = read_hdr_and_payload chan.read in
+      match opt with
         | Option.StartTLS ->
           let resp = if chan.is_tls then OptionResponse.Invalid else OptionResponse.Policy in
-          respond opt resp chan.write
-          >>= loop
+          let%lwt () = respond opt resp chan.write in
+          loop ()
         | Option.ExportName -> Lwt.return (Cstruct.to_string payload, make chan)
         | Option.Abort -> Lwt.fail Client_requested_abort
         | Option.Unknown _ ->
-          respond opt OptionResponse.Unsupported chan.write
-          >>= loop
+          let%lwt () = respond opt OptionResponse.Unsupported chan.write in
+          loop ()
         | Option.List ->
           begin match offer with
             | None ->
-              respond opt OptionResponse.Policy chan.write
-              >>= loop
+              let%lwt () = respond opt OptionResponse.Policy chan.write in
+              loop ()
             | Some offers ->
               let rec advertise = function
                 | [] -> send_ack opt chan.write
                 | x :: xs ->
                   let len = String.length x in
-                  respond ~len opt OptionResponse.Server chan.write
-                  >>= fun () ->
+                  let%lwt () = respond ~len opt OptionResponse.Server chan.write in
                   let name = Cstruct.create len in
                   Cstruct.blit_from_string x 0 name 0 len;
-                  chan.write name
-                  >>= fun () ->
+                  let%lwt () = chan.write name in
                   advertise xs in
-              advertise offers
-              >>= loop
+              let%lwt () = advertise offers in
+              loop ()
           end
       in loop ()
   in
   let negotiate_tls make_tls_channel =
     let rec negotiate_tls () =
-      read_hdr_and_payload channel.read_clear
-      >>= fun (opt, _) -> match opt with
+      let%lwt (opt, _) = read_hdr_and_payload channel.read_clear in
+      match opt with
         | Option.ExportName -> Lwt.fail_with "Client requested export over cleartext channel but server is in FORCEDTLS mode."
         | Option.Abort -> Lwt.fail_with "Client requested abort (before negotiating TLS)."
         | Option.StartTLS -> (
-            send_ack opt channel.write_clear
-            >>= make_tls_channel
-            >>= fun tch ->
+            let%lwt () = send_ack opt channel.write_clear in
+            let%lwt tch = make_tls_channel () in
             generic_loop (Channel.generic_of_tls_channel tch)
           )
         (* For any other option, respond saying TLS is required, then await next OptionRequest. *)
-        | _ -> respond opt OptionResponse.TlsReqd channel.write_clear
-               >>= negotiate_tls
+        | _ ->
+          let%lwt () = respond opt OptionResponse.TlsReqd channel.write_clear in
+          negotiate_tls ()
     in negotiate_tls ()
   in
   let client_flags = NegotiateResponse.unmarshal buf in
@@ -130,24 +125,25 @@ let connect channel ?offer () =
   let old_client = not (List.mem ClientFlag.Fixed_newstyle client_flags) in
   match channel.make_tls_channel with
     | None -> (    (* We are in NOTLS mode *)
-        (if old_client
-         then Lwt_log_core.warning ~section "Client doesn't report Fixed_newstyle"
-         else Lwt.return_unit) >>= fun () ->
+        let%lwt () =
+          (if old_client
+           then Lwt_log_core.warning ~section "Client doesn't report Fixed_newstyle"
+           else Lwt.return_unit)
+        in
         (* Continue regardless *)
         generic_loop (Channel.generic_of_cleartext_channel channel)
       )
     | Some make_tls_channel -> (   (* We are in FORCEDTLS mode *)
         if old_client
         then (
-          Lwt_log_core.error ~section "Server rejecting connection: it wants to use TLS but client flags don't include Fixed_newstyle" >>= fun () ->
+          let%lwt () = Lwt_log_core.error ~section "Server rejecting connection: it wants to use TLS but client flags don't include Fixed_newstyle" in
           Lwt.fail_with "client does not report Fixed_newstyle and server is in FORCEDTLS mode."
         )
         else negotiate_tls make_tls_channel
       )
 
 let with_connection clearchan ?offer f =
-  connect clearchan ?offer ()
-  >>= fun (exportname, t) ->
+  let%lwt (exportname, t) = connect clearchan ?offer () in
   Lwt.finalize
     (fun () -> f exportname t)
     (fun () -> close t)
@@ -155,13 +151,11 @@ let with_connection clearchan ?offer f =
 let negotiate_end t  size flags : t Lwt.t =
   let buf = Cstruct.create DiskInfo.sizeof in
   DiskInfo.(marshal buf { size; flags });
-  t.channel.write buf
-  >>= fun () ->
+  let%lwt () = t.channel.write buf in
   Lwt.return { channel = t.channel; request = t.request; reply = t.reply; m = t.m }
 
 let next t =
-  t.channel.read t.request
-  >>= fun () ->
+  let%lwt () = t.channel.read t.request in
   match Request.unmarshal t.request with
   | `Ok r -> Lwt.return r
   | `Error e -> Lwt.fail e
@@ -170,8 +164,7 @@ let ok t handle payload =
   Lwt_mutex.with_lock t.m
     (fun () ->
        Reply.marshal t.reply { Reply.handle; error = `Ok () };
-       t.channel.write t.reply
-       >>= fun () ->
+       let%lwt () = t.channel.write t.reply in
        match payload with
        | None -> Lwt.return ()
        | Some data -> t.channel.write data
@@ -188,27 +181,25 @@ let serve t (type t) ?(read_only=true) block (b:t) =
   let section = Lwt_log_core.Section.make("Server.serve") in
   let module Block = (val block: V1_LWT.BLOCK with type t = t) in
 
-  Lwt_log_core.notice_f ~section "Serving new client, read_only = %b" read_only >>= fun () ->
+  let%lwt () = Lwt_log_core.notice_f ~section "Serving new client, read_only = %b" read_only in
 
-  Block.get_info b
-  >>= fun info ->
+  let%lwt info = Block.get_info b in
   let size = Int64.(mul info.Block.size_sectors (of_int info.Block.sector_size)) in
-  (match read_only, info.Block.read_write with
-   | true, _ -> Lwt.return true
-   | false, true -> Lwt.return false
-   | false, false ->
-     Lwt_log_core.error ~section "Read-write access was requested, but block is read-only, sending NBD_FLAG_READ_ONLY transmission flag" >>= fun () ->
-     Lwt.return true)
-  >>= fun read_only ->
+  let%lwt read_only =
+    (match read_only, info.Block.read_write with
+     | true, _ -> Lwt.return true
+     | false, true -> Lwt.return false
+     | false, false ->
+       let%lwt () = Lwt_log_core.error ~section "Read-write access was requested, but block is read-only, sending NBD_FLAG_READ_ONLY transmission flag" in
+       Lwt.return true)
+  in
   let flags = if read_only then [ PerExportFlag.Read_only ] else [] in
-  negotiate_end t size flags
-  >>= fun t ->
+  let%lwt t = negotiate_end t size flags in
 
   let block = Io_page.(to_cstruct (get 128)) in
   let block_size = Cstruct.len block in
   let rec loop () =
-    next t
-    >>= fun request ->
+    let%lwt request = next t in
     let open Request in
     match request with
     | { ty = Command.Write; from; len; handle } ->
@@ -220,18 +211,17 @@ let serve t (type t) ?(read_only=true) block (b:t) =
         let rec copy offset remaining =
           let n = min block_size remaining in
           let subblock = Cstruct.sub block 0 n in
-          t.channel.Channel.read subblock
-          >>= fun () ->
-          Block.write b Int64.(div offset (of_int info.Block.sector_size)) [ subblock ]
-          >>= function
+          let%lwt () = t.channel.Channel.read subblock in
+          let%lwt res = Block.write b Int64.(div offset (of_int info.Block.sector_size)) [ subblock ] in
+          match res with
           | `Error e ->
-            Lwt_log_core.debug_f ~section "Error while writing: %s; returning EIO error" (Block_error_printer.to_string e) >>= fun () ->
+            let%lwt () = Lwt_log_core.debug_f ~section "Error while writing: %s; returning EIO error" (Block_error_printer.to_string e) in
             error t handle `EIO
           | `Ok () ->
             let remaining = remaining - n in
             if remaining > 0
             then copy Int64.(add offset (of_int n)) remaining
-            else ok t handle None >>= fun () -> loop () in
+            else let%lwt () = ok t handle None in loop () in
         copy from (Int32.to_int request.Request.len)
       end
     | { ty = Command.Read; from; len; handle } ->
@@ -247,18 +237,16 @@ let serve t (type t) ?(read_only=true) block (b:t) =
       if Int64.(rem from (of_int info.Block.sector_size)) <> 0L || Int64.(rem (of_int32 len) (of_int info.Block.sector_size) <> 0L)
       then error t handle `EINVAL
       else begin
-        ok t handle None
-        >>= fun () ->
+        let%lwt () = ok t handle None in
         let rec copy offset remaining =
           let n = min block_size remaining in
           let subblock = Cstruct.sub block 0 n in
-          Block.read b Int64.(div offset (of_int info.Block.sector_size)) [ subblock ]
-          >>= function
+          let%lwt res = Block.read b Int64.(div offset (of_int info.Block.sector_size)) [ subblock ] in
+          match res with
           | `Error e ->
             Lwt.fail_with (Printf.sprintf "Partial failure during a Block.read: %s; terminating the session" (Block_error_printer.to_string e))
           | `Ok () ->
-            t.channel.write subblock
-            >>= fun () ->
+            let%lwt () = t.channel.write subblock in
             let remaining = remaining - n in
             if remaining > 0
             then copy Int64.(add offset (of_int n)) remaining
@@ -266,9 +254,9 @@ let serve t (type t) ?(read_only=true) block (b:t) =
         copy from (Int32.to_int request.Request.len)
       end
     | { ty = Command.Disc; _ } ->
-      Lwt_log.notice ~section "Received NBD_CMD_DISC, disconnecting" >>= fun () ->
+      let%lwt () = Lwt_log.notice ~section "Received NBD_CMD_DISC, disconnecting" in
       Lwt.return_unit
     | _ ->
-      Lwt_log_core.warning ~section "Received unknown command, returning EINVAL" >>= fun () ->
+      let%lwt () = Lwt_log_core.warning ~section "Received unknown command, returning EINVAL" in
       error t request.Request.handle `EINVAL in
   loop ()
