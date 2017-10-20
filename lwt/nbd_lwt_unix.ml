@@ -19,7 +19,6 @@ open Nbd
 open Channel
 
 let return = Lwt.return
-let (>>=) = Lwt.(>>=)
 
 type tls_role =
   | TlsClient of Ssl.context
@@ -43,13 +42,13 @@ let io_complete op fd buffer =
   let buf = buffer.Cstruct.buffer in
   (* loop returns the total of the ints returned by the calls to [op] *)
   let rec loop acc ofs len =
-    op fd buf ofs len >>= fun n ->
+    let%lwt n = op fd buf ofs len in
     let len' = len - n in
     let acc' = acc + n in
     if len' = 0 || n = 0
     then return acc'
     else loop acc' (ofs + n) len' in
-  loop 0 ofs len >>= fun n ->
+  let%lwt n = loop 0 ofs len in
   if n = 0 && len <> 0
   then Lwt.fail End_of_file
   else return ()
@@ -60,14 +59,14 @@ let tls_channel_of_fd fd role () =
       | TlsClient ctx -> ctx, Lwt_ssl.ssl_connect
       | TlsServer ctx -> ctx, Lwt_ssl.ssl_accept
   in
-  ssl_start fd ctx >>= fun sock ->
+  let%lwt sock = ssl_start fd ctx in
 
   let read_tls buf =
-    io_complete Lwt_ssl.read_bytes sock buf >>= fun () ->
+    let%lwt () = io_complete Lwt_ssl.read_bytes sock buf in
     return () in
 
   let write_tls buf =
-    io_complete Lwt_ssl.write_bytes sock buf >>= fun () ->
+    let%lwt () = io_complete Lwt_ssl.write_bytes sock buf in
     return () in
 
   let close_tls () =
@@ -94,11 +93,9 @@ let generic_channel_of_fd fd role =
 (* This function is used by the client. The channel has no TLS ability. *)
 let connect hostname port =
   let socket = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_STREAM 0 in
-  Lwt_unix.gethostbyname hostname
-  >>= fun host_info ->
+  let%lwt host_info = Lwt_unix.gethostbyname hostname in
   let server_address = host_info.Lwt_unix.h_addr_list.(0) in
-  Lwt_unix.connect socket (Lwt_unix.ADDR_INET (server_address, port))
-  >>= fun () ->
+  let%lwt () = Lwt_unix.connect socket (Lwt_unix.ADDR_INET (server_address, port)) in
   (generic_channel_of_fd socket None)
 
 let init_tls_get_ctx ~certfile ~ciphersuites =
@@ -111,8 +108,8 @@ let init_tls_get_ctx ~certfile ~ciphersuites =
   ctx
 
 let with_block filename f =
-  Block.connect filename
-  >>= function
+  let%lwt res = Block.connect filename in
+  match res with
   | `Error _ ->
     Lwt.fail_with (Printf.sprintf "with_block failed to open %s" filename)
   | `Ok b ->
