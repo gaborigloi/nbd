@@ -144,9 +144,7 @@ let connect channel ?offer () =
 
 let with_connection clearchan ?offer f =
   let%lwt (exportname, t) = connect clearchan ?offer () in
-  Lwt.finalize
-    (fun () -> f exportname t)
-    (fun () -> close t)
+  (f exportname t) [%lwt.finally close t]
 
 let negotiate_end t  size flags : t Lwt.t =
   let buf = Cstruct.create DiskInfo.sizeof in
