@@ -48,7 +48,7 @@ end
 module Make (R : RPC) : sig
   type client
 
-  val rpc : R.request_hdr -> R.request_body -> R.response_body -> client -> (unit, Protocol.Error.t) Result.result Lwt.t
+  val rpc : ?reply:bool -> R.request_hdr -> R.request_body -> R.response_body -> client -> (unit, Protocol.Error.t) Result.result Lwt.t
   (** [rpc req_hdr req_body response_body client] sends a request to the server, and
       saves the response into [response_body]. Will block until a response to
       this request is received from the server. *)
@@ -90,15 +90,21 @@ end = struct
             Lwt.fail e)
     in th >>= fun () -> dispatcher t
 
-  let rpc req_hdr req_body response_body t =
+  let rpc ?(reply=true) req_hdr req_body response_body t =
+    let send () =
+      Lwt_mutex.with_lock t.outgoing_mutex
+        (fun () -> R.send_one t.transport req_hdr req_body)
+    in
+    if not reply then
+      send () |> Lwt_result.ok
+    else
     let sleeper, waker = Lwt.wait () in
     if t.dispatcher_shutting_down
     then Lwt.fail Shutdown
     else begin
       let id = R.id_of_request req_hdr in
       Hashtbl.add t.id_to_wakeup id (req_hdr, waker, response_body);
-      Lwt_mutex.with_lock t.outgoing_mutex
-        (fun () -> R.send_one t.transport req_hdr req_body)
+      send ()
       >>= fun () ->
       sleeper
     end

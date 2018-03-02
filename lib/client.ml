@@ -244,5 +244,12 @@ let read t from buffers =
   end
 
 let disconnect t =
+  let handle = get_handle () in
+  let req_hdr = {
+    Request.ty = Command.Disc;
+    handle; from = 0L;
+    len = 0l
+  } in
+  Rpc.rpc ~reply:false req_hdr None [] t.client >>= function _ ->
   t.disconnected <- true;
   Lwt.return ()
