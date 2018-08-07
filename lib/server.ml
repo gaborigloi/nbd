@@ -98,6 +98,9 @@ let connect channel ?offer () =
         (* We ignore all the information requests and only send the required
          * NBD_INFO_EXPORT in negotiate_end - the protcol allows this *)
         Lwt.return (exportname, make ~go:true chan)
+      | Option.StructuredReply ->
+        respond opt OptionResponse.Unsupported chan.write
+        >>= loop
       | Option.Abort ->
         Lwt.catch
           (fun () -> send_ack opt chan.write)
