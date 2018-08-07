@@ -198,6 +198,7 @@ module Option = struct
     | List
     | StartTLS
     | Go
+    | StructuredReply
     | Unknown of int32
   [@@deriving sexp]
 
@@ -210,6 +211,7 @@ module Option = struct
     (* 4 is not in use in the NBD protocol. *)
     | 5l -> StartTLS
     | 7l -> Go
+    | 8l -> StructuredReply
     (* 6 and 8 are not supported in this implementation. *)
     | c -> Unknown c
 
@@ -219,6 +221,7 @@ module Option = struct
     | List -> 3l
     | StartTLS -> 5l
     | Go -> 7l
+    | StructuredReply -> 8l
     | Unknown c -> c
 end
 

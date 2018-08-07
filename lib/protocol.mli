@@ -105,6 +105,8 @@ module Option: sig
     | StartTLS   (** The client would like to protect the session with TLS. *)
     | Go         (** The client would like to connect to a given disk/export by
                      name using NBD_OPT_GO *)
+    | StructuredReply (** The client wishes to use structured replies during
+                          the transmission phase.*)
     | Unknown of int32 (** This option is unknown to this implementation *)
   [@@deriving sexp]
 
