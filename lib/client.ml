@@ -93,16 +93,6 @@ type t = {
 
 type id = unit
 
-let make channel size_bytes flags =
-  Rpc.create channel
-  >>= fun client ->
-  let read_write = not (List.mem PerExportFlag.Read_only flags) in
-  let sector_size = 1 in (* Note: NBD has no notion of a sector *)
-  let size_sectors = size_bytes in
-  let info = { Mirage_block.read_write; sector_size; size_sectors } in
-  let disconnected = false in
-  Lwt.return { client; info; disconnected }
-
 let list channel =
   let section = Lwt_log_core.Section.make("Client.list") in
 
@@ -174,7 +164,7 @@ let list channel =
         result
     end
 
-let negotiate channel export =
+let connect channel ~structured_reply export =
   let buf = Cstruct.create Announcement.sizeof in
   channel.read buf
   >>= fun () ->
@@ -187,15 +177,31 @@ let negotiate channel export =
     begin match Negotiate.unmarshal buf kind with
       | Error e -> Lwt.fail e
       | Ok (Negotiate.V1 x) ->
-        make channel x.Negotiate.size x.Negotiate.flags
-        >>= fun t ->
-        Lwt.return (t, x.Negotiate.size, x.Negotiate.flags)
+        Lwt.return (channel, x.Negotiate.size, x.Negotiate.flags)
       | Ok (Negotiate.V2 x) ->
         let buf = Cstruct.create NegotiateResponse.sizeof in
         let flags = if List.mem GlobalFlag.Fixed_newstyle x then [ ClientFlag.Fixed_newstyle ] else [] in
         NegotiateResponse.marshal buf flags;
         channel.write buf
         >>= fun () ->
+        (if structured_reply then begin
+            (* negotiate structured replies *)
+            let buf = Cstruct.create OptionRequestHeader.sizeof in
+            OptionRequestHeader.(marshal buf { ty = Option.StructuredReply; length = 0l });
+            channel.write buf >>= fun () ->
+            let buf = Cstruct.create OptionResponseHeader.sizeof in
+            (* receive ack *)
+            channel.read buf >>= fun () ->
+            begin match OptionResponseHeader.unmarshal buf with
+              | Error e -> Lwt.fail e
+              | Ok { request_type = Option.StructuredReply; response_type = OptionResponse.Ack; length = 0l } ->
+                Lwt.return_unit
+              | Ok r ->
+                Lwt.fail_with (Printf.sprintf "Received incorrect option response: %s" (OptionResponseHeader.to_string r))
+            end
+          end else Lwt.return_unit)
+        >>= fun () ->
+        (* send export name *)
         let buf = Cstruct.create OptionRequestHeader.sizeof in
         OptionRequestHeader.(marshal buf { ty = Option.ExportName; length = Int32.of_int (String.length export) });
         channel.write buf
@@ -210,11 +216,24 @@ let negotiate channel export =
         begin match DiskInfo.unmarshal buf with
           | Error e -> Lwt.fail e
           | Ok x ->
-            make channel x.DiskInfo.size x.DiskInfo.flags
-            >>= fun t ->
-            Lwt.return (t, x.DiskInfo.size, x.DiskInfo.flags)
+            Lwt.return (channel, x.DiskInfo.size, x.DiskInfo.flags)
         end
     end
+
+let make channel size_bytes flags =
+  Rpc.create channel
+  >>= fun client ->
+  let read_write = not (List.mem PerExportFlag.Read_only flags) in
+  let sector_size = 1 in (* Note: NBD has no notion of a sector *)
+  let size_sectors = size_bytes in
+  let info = { Mirage_block.read_write; sector_size; size_sectors } in
+  let disconnected = false in
+  Lwt.return { client; info; disconnected }
+
+let negotiate channel export =
+  connect channel ~structured_reply:false export >>= fun (channel, size, flags) ->
+  make channel size flags >|= fun t ->
+  (t, size, flags)
 
 type 'a io = 'a Lwt.t
 

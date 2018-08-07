@@ -33,6 +33,8 @@ module type CLIENT = sig
       [`Error `Unsupported] means the server is old and does not support the query
       function. *)
 
+  val connect: channel -> structured_reply:bool -> string -> (generic_channel * size * Protocol.PerExportFlag.t list) Lwt.t
+
   val negotiate: channel -> string -> (t * size * Protocol.PerExportFlag.t list) Lwt.t
   (** [negotiate channel export] takes an already-connected channel,
       performs the initial protocol negotiation and connects to
