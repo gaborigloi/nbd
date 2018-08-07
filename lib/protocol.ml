@@ -197,6 +197,7 @@ module Option = struct
     | Abort
     | List
     | StartTLS
+    | Go
     | Unknown of int32
   [@@deriving sexp]
 
@@ -208,7 +209,8 @@ module Option = struct
     | 3l -> List
     (* 4 is not in use in the NBD protocol. *)
     | 5l -> StartTLS
-    (* 6, 7, 8 are not supported in this implementation. *)
+    | 7l -> Go
+    (* 6 and 8 are not supported in this implementation. *)
     | c -> Unknown c
 
   let to_int32 = function
@@ -216,6 +218,7 @@ module Option = struct
     | Abort -> 2l
     | List -> 3l
     | StartTLS -> 5l
+    | Go -> 7l
     | Unknown c -> c
 end
 
@@ -223,6 +226,7 @@ module OptionResponse = struct
   type t =
     | Ack
     | Server
+    | Info
     | Unsupported
     | Policy
     | Invalid
@@ -236,6 +240,7 @@ module OptionResponse = struct
   let of_int32 = function
     | 1l -> Ack
     | 2l -> Server
+    | 3l -> Info
     | -2147483647l -> Unsupported
     | -2147483646l -> Policy
     | -2147483645l -> Invalid
@@ -246,6 +251,7 @@ module OptionResponse = struct
   let to_int32 = function
     | Ack -> 1l
     | Server -> 2l
+    | Info -> 3l
     | Unsupported -> -2147483647l
     | Policy -> -2147483646l
     | Invalid -> -2147483645l
@@ -427,6 +433,28 @@ module DiskInfo = struct
   let marshal buf t =
     set_t_size buf t.size;
     set_t_flags buf (PerExportFlag.to_int t.flags)
+end
+
+module ExportInfo = struct
+  (* In the new style handshake, the server must respond to a NBD_OPT_GO with
+     at least one NBD_REP_INFO reply of type NBD_INFO_EXPORT *)
+
+  let nbd_info_export = 0
+
+  [%%cstruct
+    type t = {
+      info_type: uint16_t;
+      size: uint64_t;
+      flags: uint16_t;
+    } [@@big_endian]
+  ]
+
+  let sizeof = sizeof_t
+
+  let marshal buf i =
+    set_t_info_type buf nbd_info_export;
+    set_t_size buf i.DiskInfo.size;
+    set_t_flags buf (PerExportFlag.to_int i.DiskInfo.flags)
 end
 
 (* In the 'fixed new' style handshake, all options apart from ExportName
