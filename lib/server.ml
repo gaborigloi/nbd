@@ -26,17 +26,18 @@ type t = {
   request: Cstruct.t; (* buffer used to read the request headers *)
   reply: Cstruct.t;   (* buffer used to write the response headers *)
   m: Lwt_mutex.t; (* prevents partial message interleaving *)
+  go: bool; (* whether the client connected using NBD_OPT_GO *)
 }
 
 type size = int64
 
 let close t = t.channel.close ()
 
-let make channel =
+let make ?(go=false) channel =
   let request = Cstruct.create Request.sizeof in
   let reply = Cstruct.create Reply.sizeof in
   let m = Lwt_mutex.create () in
-  { channel; request; reply; m }
+  { channel; request; reply; m; go }
 
 let connect channel ?offer () =
   let section = Lwt_log_core.Section.make("Server.connect") in
@@ -91,6 +92,12 @@ let connect channel ?offer () =
         respond opt resp chan.write
         >>= loop
       | Option.ExportName -> Lwt.return (Cstruct.to_string payload, make chan)
+      | Option.Go ->
+        let name_len = Cstruct.BE.get_uint32 payload 0 |> Int32.to_int in
+        let exportname = Cstruct.sub payload 4 name_len |> Cstruct.to_string in
+        (* We ignore all the information requests and only send the required
+         * NBD_INFO_EXPORT in negotiate_end - the protcol allows this *)
+        Lwt.return (exportname, make ~go:true chan)
       | Option.Abort ->
         Lwt.catch
           (fun () -> send_ack opt chan.write)
@@ -168,12 +175,27 @@ let with_connection clearchan ?offer f =
     (fun () -> f exportname t)
     (fun () -> close t)
 
-let negotiate_end t  size flags : t Lwt.t =
-  let buf = Cstruct.create DiskInfo.sizeof in
-  DiskInfo.(marshal buf { size; flags });
-  t.channel.write buf
-  >>= fun () ->
-  Lwt.return { channel = t.channel; request = t.request; reply = t.reply; m = t.m }
+let negotiate_end t size flags =
+  let diskinfo = DiskInfo.{ size; flags } in
+  if t.go then begin
+    (* Client connected using NBD_OPT_GO *)
+    (* We must always return a NBD_INFO_EXPORT *)
+    let res = Cstruct.create OptionResponseHeader.sizeof in
+    OptionResponseHeader.(marshal res { request_type = Option.Go; response_type = OptionResponse.Info; length = ExportInfo.sizeof |> Int32.of_int });
+    t.channel.write res >>= fun () ->
+    let res = Cstruct.create ExportInfo.sizeof in
+    ExportInfo.marshal res diskinfo;
+    t.channel.write res >>= fun () ->
+    (* Then we send the final ack before entering transmission phase *)
+    let res = Cstruct.create OptionResponseHeader.sizeof in
+    OptionResponseHeader.(marshal res { request_type = Option.Go; response_type = OptionResponse.Ack; length = 0l });
+    t.channel.write res
+  end else begin
+    (* Client connected using NBD_OPT_EXPORT_NAME *)
+    let buf = Cstruct.create DiskInfo.sizeof in
+    DiskInfo.marshal buf diskinfo;
+    t.channel.write buf
+  end
 
 let next t =
   t.channel.read t.request
@@ -217,8 +239,7 @@ let serve t (type t) ?(read_only=true) block (b:t) =
      Lwt.return true)
   >>= fun read_only ->
   let flags = if read_only then [ PerExportFlag.Read_only ] else [] in
-  negotiate_end t size flags
-  >>= fun t ->
+  negotiate_end t size flags >>= fun () ->
 
   let block = Io_page.(to_cstruct (get 128)) in
   let block_size = Cstruct.len block in

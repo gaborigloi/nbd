@@ -103,6 +103,8 @@ module Option: sig
     | List       (** The client would like to receive a list of known
                      disk/exports. *)
     | StartTLS   (** The client would like to protect the session with TLS. *)
+    | Go         (** The client would like to connect to a given disk/export by
+                     name using NBD_OPT_GO *)
     | Unknown of int32 (** This option is unknown to this implementation *)
   [@@deriving sexp]
 
@@ -115,6 +117,7 @@ module OptionResponse: sig
   type t =
     | Ack (** Option acknowledged *)
     | Server (** A description of an export (in reponse to [List]) *)
+    | Info (** A detailed description about an aspect of an export *)
     | Unsupported (** The option is unsupported *)
     | Policy (** The option is blocked by an admin policy *)
     | Invalid (** The option was invalid (i.e. the client is buggy) *)
@@ -217,6 +220,18 @@ module DiskInfo: sig
 
   val unmarshal: Cstruct.t -> (t, exn) result
   val marshal: Cstruct.t -> t -> unit
+end
+
+module ExportInfo : sig
+  (** Details about the export chosen by the client in a [NBD_REP_INFO], sent
+      in response to a [Go] (or [NBD_OPT_INFO], which is currently
+      unimplemented) option.
+
+      Contains the same information as {!DiskInfo} *)
+
+  val sizeof: int
+
+  val marshal: Cstruct.t -> DiskInfo.t -> unit
 end
 
 module OptionResponseHeader: sig
