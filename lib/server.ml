@@ -33,13 +33,7 @@ type size = int64
 
 let close t = t.channel.close ()
 
-let make ?(go=false) channel =
-  let request = Cstruct.create Request.sizeof in
-  let reply = Cstruct.create Reply.sizeof in
-  let m = Lwt_mutex.create () in
-  { channel; request; reply; m; go }
-
-let connect channel ?offer () =
+let connect_chan channel ~structured_reply ?offer () =
   let section = Lwt_log_core.Section.make("Server.connect") in
   Lwt_log_core.notice ~section "Starting fixed-newstyle negotiation" >>= fun () ->
 
@@ -91,15 +85,18 @@ let connect channel ?offer () =
         let resp = if chan.is_tls then OptionResponse.Invalid else OptionResponse.Policy in
         respond opt resp chan.write
         >>= loop
-      | Option.ExportName -> Lwt.return (Cstruct.to_string payload, make chan)
+      | Option.ExportName -> Lwt.return (Cstruct.to_string payload, false, chan)
       | Option.Go ->
         let name_len = Cstruct.BE.get_uint32 payload 0 |> Int32.to_int in
         let exportname = Cstruct.sub payload 4 name_len |> Cstruct.to_string in
         (* We ignore all the information requests and only send the required
          * NBD_INFO_EXPORT in negotiate_end - the protcol allows this *)
-        Lwt.return (exportname, make ~go:true chan)
+        Lwt.return (exportname, true, chan)
       | Option.StructuredReply ->
-        respond opt OptionResponse.Unsupported chan.write
+        (if structured_reply then
+           send_ack opt chan.write
+         else
+           respond opt OptionResponse.Unsupported chan.write)
         >>= loop
       | Option.Abort ->
         Lwt.catch
@@ -171,6 +168,16 @@ let connect channel ?offer () =
       else negotiate_tls make_tls_channel
     )
 
+let make go channel =
+  let request = Cstruct.create Request.sizeof in
+  let reply = Cstruct.create Reply.sizeof in
+  let m = Lwt_mutex.create () in
+  { channel; request; reply; m; go }
+
+let connect channel ?offer () =
+  connect_chan channel ~structured_reply:false ?offer () >|= fun (exportname, go, channel) ->
+  (exportname, make go channel)
+
 let with_connection clearchan ?offer f =
   connect clearchan ?offer ()
   >>= fun (exportname, t) ->
@@ -178,26 +185,26 @@ let with_connection clearchan ?offer f =
     (fun () -> f exportname t)
     (fun () -> close t)
 
-let negotiate_end t size flags =
+let negotiate_end ~go channel size flags =
   let diskinfo = DiskInfo.{ size; flags } in
-  if t.go then begin
+  if go then begin
     (* Client connected using NBD_OPT_GO *)
     (* We must always return a NBD_INFO_EXPORT *)
     let res = Cstruct.create OptionResponseHeader.sizeof in
     OptionResponseHeader.(marshal res { request_type = Option.Go; response_type = OptionResponse.Info; length = ExportInfo.sizeof |> Int32.of_int });
-    t.channel.write res >>= fun () ->
+    channel.write res >>= fun () ->
     let res = Cstruct.create ExportInfo.sizeof in
     ExportInfo.marshal res diskinfo;
-    t.channel.write res >>= fun () ->
+    channel.write res >>= fun () ->
     (* Then we send the final ack before entering transmission phase *)
     let res = Cstruct.create OptionResponseHeader.sizeof in
     OptionResponseHeader.(marshal res { request_type = Option.Go; response_type = OptionResponse.Ack; length = 0l });
-    t.channel.write res
+    channel.write res
   end else begin
     (* Client connected using NBD_OPT_EXPORT_NAME *)
     let buf = Cstruct.create DiskInfo.sizeof in
     DiskInfo.marshal buf diskinfo;
-    t.channel.write buf
+    channel.write buf
   end
 
 let next t =
@@ -242,7 +249,7 @@ let serve t (type t) ?(read_only=true) block (b:t) =
      Lwt.return true)
   >>= fun read_only ->
   let flags = if read_only then [ PerExportFlag.Read_only ] else [] in
-  negotiate_end t size flags >>= fun () ->
+  negotiate_end ~go:t.go t.channel size flags >>= fun () ->
 
   let block = Io_page.(to_cstruct (get 128)) in
   let block_size = Cstruct.len block in

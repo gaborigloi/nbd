@@ -58,6 +58,8 @@ module type SERVER = sig
   exception Client_requested_abort
   (** The client terminated the option haggling phase by sending NBD_OPT_ABORT *)
 
+  val connect_chan : cleartext_channel -> structured_reply:bool -> ?offer:name list -> unit -> (name * bool * generic_channel) Lwt.t
+
   val connect : cleartext_channel -> ?offer:name list -> unit -> (name * t) Lwt.t
   (** [connect cleartext_channel ?offer ()] performs the 'new style' initial
       handshake and options negotiation.
@@ -71,6 +73,8 @@ module type SERVER = sig
 
       Raises {!Client_requested_abort} if the client aborts the option haggilng
       phase instead of entering the transmission phase *)
+
+  val negotiate_end : go:bool -> generic_channel -> size -> Protocol.PerExportFlag.t list -> unit Lwt.t
 
   val serve : t -> ?read_only:bool -> (module Mirage_block_lwt.S with type t = 'b) -> 'b -> unit Lwt.t
   (** [serve t read_only block b] runs forever processing requests from [t], using [block]
