@@ -29,6 +29,8 @@ type t = {
   go: bool; (* whether the client connected using NBD_OPT_GO *)
 }
 
+let channel_of_t { channel; _ } = channel
+
 type size = int64
 
 let close t = t.channel.close ()

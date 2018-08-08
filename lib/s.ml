@@ -48,6 +48,8 @@ module type SERVER = sig
   type t
   (** An open connection to an NBD client *)
 
+  val channel_of_t : t -> channel
+
   type size = int64
   (** The size of a remote disk *)
 
@@ -71,6 +73,8 @@ module type SERVER = sig
 
       Raises {!Client_requested_abort} if the client aborts the option haggilng
       phase instead of entering the transmission phase *)
+
+  val negotiate_end : t -> size -> Protocol.PerExportFlag.t list -> unit Lwt.t
 
   val serve : t -> ?read_only:bool -> (module Mirage_block_lwt.S with type t = 'b) -> 'b -> unit Lwt.t
   (** [serve t read_only block b] runs forever processing requests from [t], using [block]
