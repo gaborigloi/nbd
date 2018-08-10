@@ -229,6 +229,60 @@ module Impl = struct
     in
     Lwt_main.run t
 
+  let proxy _common uri port exportname certfile ciphersuites no_tls =
+    let tls_role = init_tls_get_server_ctx ~certfile ~ciphersuites no_tls in
+    let validate ~client_exportname =
+      match exportname with
+      | Some exportname when exportname <> client_exportname ->
+        Lwt.fail_with
+          (Printf.sprintf "Client requested invalid exportname %s, name of the export is %s" client_exportname exportname)
+      | _ -> Lwt.return_unit
+    in
+    let handle_connection fd =
+      Lwt.finalize
+        (fun () ->
+           Nbd_lwt_unix.with_channel fd tls_role
+             (fun clearchan ->
+                let offer = match exportname with
+                  | None -> None
+                  | Some exportname -> Some [exportname]
+                in
+                Server.with_connection
+                  ?offer
+                  clearchan
+                  (fun client_exportname _svr ->
+                     validate ~client_exportname >>= fun () ->
+                     Lwt.fail_with ("TODO: proxy to NBD server at " ^ uri)
+                  )
+             )
+        )
+        (ignore_exn (fun () -> Lwt_unix.close fd))
+    in
+    let t =
+      let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+      Lwt.finalize
+        (fun () ->
+           Lwt_unix.setsockopt sock Lwt_unix.SO_REUSEADDR true;
+           let sockaddr = Lwt_unix.ADDR_INET(Unix.inet_addr_any, port) in
+           Lwt_unix.bind sock sockaddr >>= fun () ->
+           Lwt_unix.listen sock 5;
+           let rec loop () =
+             Lwt_unix.accept sock
+             >>= fun (fd, _) ->
+             (* Background thread per connection *)
+             let _ =
+               Lwt.catch
+                 (fun () -> handle_connection fd)
+                 (fun e -> Lwt_log.error_f "Caught exception %s while handling connection" (Printexc.to_string e))
+             in
+             loop ()
+           in
+           loop ()
+        )
+        (ignore_exn (fun () -> Lwt_unix.close sock))
+    in
+    Lwt_main.run t
+
   let mirror _common filename port secondary certfile ciphersuites no_tls =
     let tls_role = init_tls_get_server_ctx ~certfile ~ciphersuites no_tls in
     let filename = require "filename" filename in
@@ -314,6 +368,36 @@ let serve_cmd =
   Term.(ret(pure Impl.serve $ common_options_t $ filename $ port $ exportname $ certfile $ ciphersuites $ no_tls)),
   Term.info "serve" ~sdocs:_common_options ~doc ~man
 
+let proxy_cmd =
+  let doc = "proxy a NBD server" in
+  let man = [
+    `S "DESCRIPTION";
+    `P "Create a server which proxies requests to another NBD server.";
+  ] @ help in
+  let uri =
+    let doc = "Uri of the server to proxy, e.g. nbd:unix:/path/to/unix/domain/socket/of/server:exportname=name_of_export" in
+    Arg.(required & pos 0 (some string) None & info [] ~doc)
+  in
+  let port =
+    let doc = "Local port to listen for connections on" in
+    Arg.(value & opt int 10809 & info [ "port" ] ~doc)
+  in
+  let exportname =
+    let doc = {|Export name to use when serving the file. If specified, clients
+                will be able to list this export, and only this export name
+                will be accepted. If unspecified, listing the exports will not
+                be allowed, and all export names will be accepted when
+                connecting.|}
+    in
+    Arg.(value & opt (some string) None & info ["exportname"] ~doc)
+  in
+  let no_tls =
+    let doc = "Use NOTLS mode (refusing TLS) instead of the default FORCEDTLS." in
+    Arg.(value & flag & info ["no-tls"] ~doc)
+  in
+  Term.(ret(pure Impl.proxy $ common_options_t $ uri $ port $ exportname $ certfile $ ciphersuites $ no_tls)),
+  Term.info "proxy" ~sdocs:_common_options ~doc ~man
+
 let mirror_cmd =
   let doc = "serve a disk over NBD while mirroring" in
   let man = [
@@ -358,7 +442,7 @@ let default_cmd =
   Term.(ret (pure (fun _ -> `Help (`Pager, None)) $ common_options_t)),
   Term.info "nbd-tool" ~version:"1.0.0" ~sdocs:_common_options ~doc ~man
 
-let cmds = [serve_cmd; list_cmd; size_cmd; mirror_cmd]
+let cmds = [serve_cmd; proxy_cmd; list_cmd; size_cmd; mirror_cmd]
 
 let () =
   match Term.eval_choice default_cmd cmds with
