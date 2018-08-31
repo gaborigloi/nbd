@@ -229,7 +229,22 @@ module Impl = struct
     in
     Lwt_main.run t
 
-  let proxy _common uri port exportname certfile ciphersuites no_tls =
+  (** Extracts the UNIX domain socket path and the export name from the NBD URI.
+      This has the format nbd:unix:<domain-socket>:exportname=<name> *)
+  let parse_nbd_uri uri =
+    let fail () =
+      Lwt.fail_with ("Could not parse NBD URI returned from the storage backend: " ^ uri)
+    in
+    match String.split_on_char ':' uri with
+    | ["nbd"; "unix"; socket; exportname] -> begin
+        let prefix = "exportname=" in
+        if String.sub exportname 0 (String.length prefix) <> prefix then fail () else Lwt.return_unit >|= fun () ->
+        let exportname = String.sub exportname (String.length prefix) (String.length exportname - String.length prefix) in
+        (socket, exportname)
+      end
+    | _ -> fail ()
+
+  let proxy _common uri structured_reply port exportname certfile ciphersuites no_tls =
     let tls_role = init_tls_get_server_ctx ~certfile ~ciphersuites no_tls in
     let validate ~client_exportname =
       match exportname with
@@ -247,27 +262,59 @@ module Impl = struct
                   | None -> None
                   | Some exportname -> Some [exportname]
                 in
-                Server.with_connection
-                  ?offer
-                  clearchan
-                  (fun client_exportname _svr ->
+                Server.connect_chan ~structured_reply ?offer clearchan () >>= fun (client_exportname, go, svr_chan) ->
+                Lwt.finalize
+                  (fun () ->
                      validate ~client_exportname >>= fun () ->
-                     Lwt.fail_with ("TODO: proxy to NBD server at " ^ uri)
+
+                     let client_sock = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+                     parse_nbd_uri uri >>= fun (svr_path, svr_exportname) ->
+                     let sockaddr = Lwt_unix.ADDR_UNIX(svr_path) in
+                     Lwt_unix.connect client_sock sockaddr >>= fun () ->
+                     let client_chan = Nbd_lwt_unix.cleartext_channel_of_fd client_sock None in
+                     Lwt.try_bind
+                       (fun () -> Client.connect (Channel.generic_of_cleartext_channel client_chan) ~structured_reply svr_exportname)
+                       (fun (client_chan, size, flags) ->
+                          Lwt.finalize
+                            (fun () ->
+                               Server.negotiate_end ~go svr_chan size flags >>= fun () ->
+                               let rec client_to_server () =
+                                 let buf = Cstruct.create 16000000 in
+                                 client_chan.Channel.read_nonblock buf >>= fun n ->
+                                 if n > 0 then
+                                   svr_chan.Channel.write (Cstruct.sub buf 0 n) >>= client_to_server
+                                 else
+                                   Lwt.fail_with "client_to_server: got 0"
+                               in
+                               let rec server_to_client () =
+                                 let buf = Cstruct.create 16000000 in
+                                 svr_chan.Channel.read_nonblock buf >>= fun n ->
+                                 if n > 0 then
+                                   client_chan.Channel.write (Cstruct.sub buf 0 n) >>= server_to_client
+                                 else
+                                   Lwt.fail_with "server_to_client: got 0"
+                               in
+                               Lwt.pick [client_to_server (); server_to_client ()]
+                            )
+                            client_chan.Channel.close
+                       )
+                       (fun e -> client_chan.Channel.close_clear () >>= fun () -> Lwt.fail e)
                   )
+                  svr_chan.Channel.close
              )
         )
         (ignore_exn (fun () -> Lwt_unix.close fd))
     in
     let t =
-      let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+      let svr_sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
       Lwt.finalize
         (fun () ->
-           Lwt_unix.setsockopt sock Lwt_unix.SO_REUSEADDR true;
+           Lwt_unix.setsockopt svr_sock Lwt_unix.SO_REUSEADDR true;
            let sockaddr = Lwt_unix.ADDR_INET(Unix.inet_addr_any, port) in
-           Lwt_unix.bind sock sockaddr >>= fun () ->
-           Lwt_unix.listen sock 5;
+           Lwt_unix.bind svr_sock sockaddr >>= fun () ->
+           Lwt_unix.listen svr_sock 5;
            let rec loop () =
-             Lwt_unix.accept sock
+             Lwt_unix.accept svr_sock
              >>= fun (fd, _) ->
              (* Background thread per connection *)
              let _ =
@@ -279,7 +326,7 @@ module Impl = struct
            in
            loop ()
         )
-        (ignore_exn (fun () -> Lwt_unix.close sock))
+        (ignore_exn (fun () -> Lwt_unix.close svr_sock))
     in
     Lwt_main.run t
 
@@ -378,6 +425,10 @@ let proxy_cmd =
     let doc = "Uri of the server to proxy, e.g. nbd:unix:/path/to/unix/domain/socket/of/server:exportname=name_of_export" in
     Arg.(required & pos 0 (some string) None & info [] ~doc)
   in
+  let structured_reply =
+    let doc = "If enabled, stuctured replies will be negotiated with the server and exposed to clients" in
+    Arg.(value & flag & info ["structured-reply"] ~doc)
+  in
   let port =
     let doc = "Local port to listen for connections on" in
     Arg.(value & opt int 10809 & info [ "port" ] ~doc)
@@ -395,7 +446,7 @@ let proxy_cmd =
     let doc = "Use NOTLS mode (refusing TLS) instead of the default FORCEDTLS." in
     Arg.(value & flag & info ["no-tls"] ~doc)
   in
-  Term.(ret(pure Impl.proxy $ common_options_t $ uri $ port $ exportname $ certfile $ ciphersuites $ no_tls)),
+  Term.(ret(pure Impl.proxy $ common_options_t $ uri $ structured_reply $ port $ exportname $ certfile $ ciphersuites $ no_tls)),
   Term.info "proxy" ~sdocs:_common_options ~doc ~man
 
 let mirror_cmd =

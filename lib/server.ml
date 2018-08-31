@@ -94,9 +94,9 @@ let connect_chan channel ~structured_reply ?offer () =
         Lwt.return (exportname, true, chan)
       | Option.StructuredReply ->
         (if structured_reply then
-           send_ack opt chan.write
+           send_ack opt chan.write >>= fun () -> Lwt_log_core.notice ~section "Accepting structured reply"
          else
-           respond opt OptionResponse.Unsupported chan.write)
+           respond opt OptionResponse.Unsupported chan.write >>= fun () -> Lwt_log_core.notice ~section "Rejecting structured reply")
         >>= loop
       | Option.Abort ->
         Lwt.catch
