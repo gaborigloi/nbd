@@ -65,27 +65,35 @@ let tls_channel_of_fd fd role () =
   let read_tls buf =
     io_complete Lwt_ssl.read_bytes sock buf >>= fun () ->
     return () in
+  let read_tls_nonblock buf =
+    Lwt_ssl.read_bytes sock buf.Cstruct.buffer buf.Cstruct.off buf.Cstruct.len
+  in
 
   let write_tls buf =
     io_complete Lwt_ssl.write_bytes sock buf >>= fun () ->
     return () in
+  let write_tls_nonblock buf =
+    Lwt_ssl.write_bytes sock buf.Cstruct.buffer buf.Cstruct.off buf.Cstruct.len
+  in
 
   let close_tls () =
     ignore (Lwt_ssl.ssl_shutdown sock);
     Lwt_ssl.close sock in
 
-  return { read_tls; write_tls; close_tls }
+  return { read_tls; read_tls_nonblock; write_tls; write_tls_nonblock; close_tls }
 
 
 let cleartext_channel_of_fd fd role_opt =
   let read_clear = Lwt_cstruct.(complete (read fd)) in
+  let read_clear_nonblock = Lwt_cstruct.read fd in
   let write_clear = Lwt_cstruct.(complete (write fd)) in
+  let write_clear_nonblock = Lwt_cstruct.write fd in
   let close_clear () = Lwt_unix.close fd in
   let make_tls_channel = match role_opt with
     | None -> None
     | Some role -> Some (tls_channel_of_fd fd role)
   in
-  { read_clear; write_clear; close_clear; make_tls_channel }
+  { read_clear; read_clear_nonblock; write_clear; write_clear_nonblock; close_clear; make_tls_channel }
 
 let generic_channel_of_fd fd role =
   let ch = cleartext_channel_of_fd fd role

@@ -96,6 +96,8 @@ let make_channel role test_sequence =
   let assert_processed_complete_sequence () = Alcotest.(check (list transmission)) "did not process complete sequence" !next [] in
   (assert_processed_complete_sequence, (read, write, close))
 
+let unimplemented _ = failwith "unimplemented"
+
 (** Passes a channel for use by the NBD client to the given function, verifying
     that all communcation matches the given test sequence and that the complete
     sequence has been processed after the function returns.
@@ -103,7 +105,7 @@ let make_channel role test_sequence =
 let with_client_channel s f =
   fun _switch () ->
     let (assert_processed_complete_sequence, (read, write, close)) = make_channel `Client s in
-    f Nbd.Channel.{read; write; close; is_tls=false} >>= fun () ->
+    f Nbd.Channel.{read; read_nonblock=unimplemented; write; write_nonblock=unimplemented; close; is_tls=false} >>= fun () ->
     assert_processed_complete_sequence ();
     Lwt.return_unit
 
@@ -114,7 +116,7 @@ let with_client_channel s f =
 let with_server_channel s f =
   fun _switch () ->
     let (assert_processed_complete_sequence, (read, write, close)) = make_channel `Server s in
-    f Nbd.Channel.{read_clear=read; write_clear=write; close_clear=close; make_tls_channel=None} >>= fun () ->
+    f Nbd.Channel.{read_clear=read; read_clear_nonblock=unimplemented; write_clear=write; write_clear_nonblock=unimplemented; close_clear=close; make_tls_channel=None} >>= fun () ->
     assert_processed_complete_sequence ();
     Lwt.return_unit
 

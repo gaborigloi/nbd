@@ -18,13 +18,17 @@
 
 type tls_channel = {
   read_tls: Cstruct.t -> unit Lwt.t;
+  read_tls_nonblock: Cstruct.t -> int Lwt.t;
   write_tls: Cstruct.t -> unit Lwt.t;
+  write_tls_nonblock: Cstruct.t -> int Lwt.t;
   close_tls: unit -> unit Lwt.t;
 }
 
-type cleartext_channel =  {
+type cleartext_channel = {
   read_clear: Cstruct.t -> unit Lwt.t;
+  read_clear_nonblock: Cstruct.t -> int Lwt.t;
   write_clear: Cstruct.t -> unit Lwt.t;
+  write_clear_nonblock: Cstruct.t -> int Lwt.t;
   close_clear: unit -> unit Lwt.t;
 
   make_tls_channel: (unit -> tls_channel Lwt.t) option;
@@ -33,7 +37,9 @@ type cleartext_channel =  {
 type generic_channel = {
   is_tls: bool;
   read: Cstruct.t -> unit Lwt.t;
+  read_nonblock: Cstruct.t -> int Lwt.t;
   write: Cstruct.t -> unit Lwt.t;
+  write_nonblock: Cstruct.t -> int Lwt.t;
   close: unit -> unit Lwt.t;
 }
 

@@ -30,11 +30,12 @@ let with_channels f =
   let client_write, server_read = make_channel "client -> server" client_to_server in
   let server_write, client_read = make_channel "server -> client" server_to_client in
   let noop () = Lwt.return_unit in
+  let unimplemented _ = failwith "unimplemented" in
   let client_channel =
-    Nbd.Channel.{ read=client_read; write=client_write; close=noop; is_tls=false }
+    Nbd.Channel.{ read=client_read; read_nonblock=unimplemented; write=client_write; write_nonblock=unimplemented; close=noop; is_tls=false }
   in
   let server_channel =
-    Nbd.Channel.{ read_clear=server_read; write_clear=server_write; close_clear=noop; make_tls_channel=None }
+    Nbd.Channel.{ read_clear=server_read; read_clear_nonblock=unimplemented; write_clear=server_write; write_clear_nonblock=unimplemented; close_clear=noop; make_tls_channel=None }
   in
   Lwt_unix.with_timeout 0.5 (fun () -> f client_channel server_channel)
 
