@@ -87,7 +87,9 @@ module type CLIENT = sig
   (** [query_block_status client offset length] the block status descriptors
       for each of the metadata contexts selected by [set_meta_contexts]. *)
 
-  val read_chunked : t -> int64 -> int32 -> (Channel.generic_channel -> size -> int32 -> unit Lwt.t) -> (unit, Protocol.Error.t) result Lwt.t
+  val read_chunked : t -> int64 -> int32
+    -> ([`Data of Channel.generic_channel * size * int32 | `Hole of Protocol.StructuredReplyChunk.OffsetHoleChunk.t] -> unit Lwt.t)
+    -> (unit, Protocol.Error.t) result Lwt.t
 
   val write_zeroes : t -> int64 -> int32 -> (unit, error) result Lwt.t
 end
@@ -130,6 +132,8 @@ module type SERVER = sig
       NBD_FLAG_READ_ONLY transmission flag, and if the client issues a write
       command, the server will send an EPERM error to the client and will
       terminate the session. *)
+
+  val proxy : t -> ?read_only:bool -> (module CLIENT with type t = 'b) -> 'b -> unit Lwt.t
 
   val close: t -> unit Lwt.t
   (** [close t] shuts down the connection [t] and frees any allocated resources *)
