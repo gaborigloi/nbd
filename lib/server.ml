@@ -347,11 +347,7 @@ let serve_internal t (type t) ?(read_only=true) block (b:t) =
         copy from (Int32.to_int request.Request.len)
       end
     in
-    let open Request in
-    match request with
-    | { ty = Command.Write; from; len; handle } ->
-      write_data from len handle block ~get_data:t.channel.Channel.read
-    | { ty = Command.WriteZeroes; from; len; handle } ->
+    let write_zeroes from len handle =
       begin match Block.write_zeroes with
         | Some write_zeroes ->
           write_zeroes b from len >>=
@@ -363,11 +359,30 @@ let serve_internal t (type t) ?(read_only=true) block (b:t) =
             | Error (`Protocol_error e) -> error t handle e
           ) >>= loop
         | None ->
+          (* NOTE: no_hole is probably irrelevant if we only have a block device or file.
+           * We cannot control whether there will be a hole or not. *)
           Cstruct.memset block 0;
           write_data from len handle block ~get_data:(fun _ -> Lwt.return_unit)
       end
-    | { ty = Command.Read; from; len; handle } -> begin
-        match t.structured_reply, Block.read_chunked with
+    in
+    let open Request in
+    match request with
+    | { command_flags = []; ty = Command.Write; from; len; handle } ->
+      (* We do not support the only command flags valid for NBD_CMD_WRITE:
+       * we do not send NBD_FLAG_SEND_FUA, so the client MUST NOT send NBD_CMD_FLAG_FUA.
+       * The NBD protocol says: "The client MUST NOT use a feature documented
+       * as 'exposed' by a flag unless that flag was set." *)
+      write_data from len handle block ~get_data:t.channel.Channel.read
+    | { command_flags = []; ty = Command.WriteZeroes; from; len; handle }
+    | { command_flags = [CommandFlag.NoHole]; ty = Command.WriteZeroes; from; len; handle } ->
+      (* The only flag we support for NBD_CMD_WRITE_ZEROES is NBD_CMD_FLAG_NO_HOLE *)
+      (* XXX We ignore the NBD_CMD_FLAG_NO_HOLE flag to save space *)
+      write_zeroes from len handle
+    | { command_flags = []; ty = Command.Read; from; len; handle } ->
+      (* We do not support any of the command flags valid for NBD_CMD_READ: we
+       * send neither NBD_FLAG_SEND_FUA, nor NBD_CMD_FLAG_DF, so the client
+       * MUST NOTsend the corresponding flags. *)
+      begin match t.structured_reply, Block.read_chunked with
         | Some structured_reply, Some read_chunked ->
           read_chunked b from len
             (function
@@ -439,6 +454,8 @@ let serve_internal t (type t) ?(read_only=true) block (b:t) =
     | { ty = Command.Disc; _ } ->
       Lwt_log.notice ~section "Received NBD_CMD_DISC, disconnecting" >>= fun () ->
       Lwt.return_unit
+    | { ty = Command.(Write | WriteZeroes | Read); _ } ->
+      Lwt.fail_with ("NbdProtocolError: invalid request " ^ (Request.to_string request))
     | { ty = Command.(Flush | Trim | BlockStatus | Unknown _); _ } ->
       Lwt_log_core.warning ~section "Received unknown command, returning EINVAL" >>= fun () ->
       error t request.Request.handle `EINVAL
